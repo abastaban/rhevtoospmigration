@@ -211,26 +211,26 @@
               msg: "{{size_list}}"
             tags: vm_info
 
-#          - set_fact: 
-#              size: "{{ size_stat.results[disk_index].openstack_image.size }}"
-#            loop: "{{disk_id_ext}}"
-#            loop_control:
-#              index_var: disk_index
-#            tags: vm_info
+          - set_fact: 
+              size: "{{ size_stat.results[disk_index].openstack_image.size }}"
+            loop: "{{disk_id_ext}}"
+            loop_control:
+              index_var: disk_index
+            tags: vm_info
             
-#          - set_fact:          
-#              size: "{{ size_stat-disk_index .openstack_image.size/1073741824 | int  }}"
-#            loop: "{{disk_id_ext}}"
-#            loop_control:
-#              index_var: disk_index          
-#            tags: vm_info
-#          - debug:
-#              msg: "{{size}}"
-#            tags: vm_info
-#          - name: reverse to list order
-#            set_fact: 
-#              sorted_size: "{{size | reverse }}"
-#            tags: vm_info
+          - set_fact:          
+              size: "{{ size_stat-disk_index .openstack_image.size/1073741824 | int  }}"
+            loop: "{{disk_id_ext}}"
+            loop_control:
+              index_var: disk_index          
+            tags: vm_info
+          - debug:
+              msg: "{{size}}"
+            tags: vm_info
+          - name: reverse to list order
+            set_fact: 
+              sorted_size: "{{size | reverse }}"
+            tags: vm_info
           - name: create volume from image {{ vm_name }} - ext - {{ disk_index }}          
             os_volume:          
               display_name: "{{ vm_name }}-ext-{{ disk_index }}"          
