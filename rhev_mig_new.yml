@@ -1,0 +1,281 @@
+- name: Migrate VMs from RHV to OSP
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - varsfile.yml
+  vars:
+    vm_name: CHEFTEST02
+    flavor: c4r8d200.flavor
+  tasks:
+      - name: Obtain SSO token with using username/password credentials        
+        ovirt_auth:          
+          url: https://rhevman.turktelekom.local/ovirt-engine/api          
+          username: admin@internal
+          insecure: true          
+          password: "{{ ovirt_password }}"
+        tags: vm_info
+
+      - name: get vm
+        ovirt_vm_info:
+          auth: "{{ ovirt_auth }}"
+          pattern: name={{ vm_name }}
+          fetch_nested: true
+          nested_attributes:
+            - bootable
+            - ips
+          #all_content: true
+        tags: vm_info
+        register: result
+
+
+      - name: get interface info
+        ovirt_nic_info:
+          auth: "{{ ovirt_auth }}"
+          vm: "{{ vm_name }}"
+          name: nic*
+          fetch_nested: true
+          nested_attributes:
+            - name
+        tags: vm_info
+        register: result_nic
+
+
+      - name: get the number of nics
+        debug:
+          msg: "{{ result_nic | json_query(jmesquery) | length }}"
+        vars:
+          jmesquery: "ovirt_nics[*].vnic_profile.name"
+        tags: vm_info
+
+
+      - name: set nics variable
+        set_fact:
+          rhv_vlan_names: "{{ result_nic | json_query(jmesquery) }}"
+        vars:
+          jmesquery: "ovirt_nics[*].vnic_profile.name"
+        tags: vm_info
+
+      - name: get the number of disks 
+        debug:
+          msg: "{{ result.ovirt_vms[0].disk_attachments|length }}"
+        tags: vm_info
+
+      - debug:
+          msg: "{{ result.ovirt_vms[0] }}"
+        tags: vm_info
+
+
+      - set_fact:
+          network: "{{ network|default([]) + [item | regex_replace('^vLAN_', 'vlan')] }}"
+        loop: "{{ rhv_vlan_names }}"
+        tags: vm_info  
+      - debug:
+          msg: "{{network}}"
+        tags: vm_info   
+
+
+      - name: shutdown vm      
+        ovirt_vm:      
+          state: stopped      
+          name: "{{ vm_name }}"      
+          auth: "{{ ovirt_auth }}"
+
+      - name: Migrate VMs with single disks
+        block:            
+          - name: set disk_id          
+            set_fact:          
+              disk_id_boot: "{{ result.ovirt_vms[0].disk_attachments[0].id }}"          
+            tags: vm_info          
+            
+                    
+          - debug:          
+              msg: "{{ disk_id_boot }}"          
+            tags: vm_info
+
+          - name: download boot disk {{ vm_name }}          
+            shell: "ovirt-img download-disk --config engine1 --format raw  {{ disk_id_boot }} {{ vm_name }}-boot.raw"
+
+          - name: upload image to openstack {{ vm_name }}          
+            os_image:          
+              name: "{{ vm_name }}-boot"          
+              container_format: bare          
+              cloud: openstack          
+              disk_format: raw          
+              state: present          
+              filename: /migration/{{ vm_name }}-boot.raw          
+            tags: osp
+
+          - name: launch the instance with single disk {{ vm_name }}
+            os_server:
+              name: "{{ vm_name }}"
+              state: present
+              cloud: openstack
+              flavor: "{{ flavor }}"
+              image: "{{ vm_name }}-boot"
+              boot_from_volume: true
+              nics: "{{ lookup('template','nics.j2') }}"
+            tags: launch_instance
+
+        rescue:
+          - name: start vm at RHV     
+            ovirt_vm:      
+              state: running      
+              name: "{{ vm_name }}"      
+              auth: "{{ ovirt_auth }}"
+        when: result.ovirt_vms[0].disk_attachments|length == 1
+          
+
+      - name: Migrate VMs with multiple disks
+        block:
+          - name: set boot_disk_id if multiple disks
+            set_fact:
+              disk_id_boot: "{{ result | json_query(jmesquery) }}"
+            vars:
+              jmesquery: "ovirt_vms[0].disk_attachments[?bootable==`true`].id"
+            tags: vm_info
+            
+
+          - name: set ext_disk_id if multiple disks
+            set_fact:          
+              disk_id_ext: "{{ result | json_query(jmesquery) }}"          
+            vars:          
+              jmesquery: "ovirt_vms[0].disk_attachments[?bootable!=`true`].id"          
+            tags: vm_info          
+          - debug:
+              msg: "{{ item }}"
+            with_items: "{{disk_id_ext}}"
+            tags: vm_info
+                    
+          - name: download boot disk {{ vm_name }}          
+            shell: "ovirt-img download-disk --config engine1 --format raw  {{ disk_id_boot[0] }} {{ vm_name }}-boot.raw"
+            async: 3600
+            poll: 5
+            tags: 
+              - download
+
+          - name: download ext disk {{ vm_name }}          
+            shell: "ovirt-img download-disk --config engine1 --format raw  {{ item }} {{ vm_name }}-ext-{{ disk_index }}.raw"
+            loop: "{{disk_id_ext}}"
+            loop_control:
+              index_var: disk_index
+            async: 3600
+            poll: 5              
+            tags: 
+              - download
+          - name: upload boot  image to openstack {{ vm_name }}          
+            os_image:          
+              name: "{{ vm_name }}-boot"          
+              container_format: bare          
+              cloud: openstack          
+              disk_format: raw          
+              state: present          
+              filename: /migration/{{ vm_name }}-boot.raw 
+            async: 3600
+            poll: 5              
+            tags: 
+              - download
+
+          - name: upload additional disk images  to openstack {{ vm_name }}-ext          
+            os_image:          
+              name: "{{ vm_name }}-ext-{{ disk_index }}"          
+              container_format: bare          
+              cloud: openstack          
+              disk_format: raw          
+              state: present          
+              filename: /migration/{{ vm_name }}-ext-{{ disk_index }}.raw
+            loop: "{{disk_id_ext}}"
+            loop_control:
+              index_var: disk_index
+            async: 3600
+            poll: 5              
+            tags: osp
+
+          - name: get the size of the volumes          
+            os_image_info:          
+              image: "{{ vm_name }}-ext-{{disk_index}}"          
+              cloud: openstack          
+            register: size_stat
+            loop: "{{disk_id_ext}}"
+            loop_control:
+              index_var: disk_index          
+            tags: vm_info
+          - debug:
+              msg: "{{ size_stat }}"
+            tags: vm_info
+
+          - set_fact:
+              size_list: "{{ size_list|default([]) + [item.openstack_image.size / 1073741824 | int ] }}"
+            loop: "{{ size_stat.results }}"
+            tags: vm_info
+          - debug:
+              msg: "{{size_list}}"
+            tags: vm_info
+
+#          - set_fact: 
+#              size: "{{ size_stat.results[disk_index].openstack_image.size }}"
+#            loop: "{{disk_id_ext}}"
+#            loop_control:
+#              index_var: disk_index
+#            tags: vm_info
+            
+#          - set_fact:          
+#              size: "{{ size_stat-disk_index .openstack_image.size/1073741824 | int  }}"
+#            loop: "{{disk_id_ext}}"
+#            loop_control:
+#              index_var: disk_index          
+#            tags: vm_info
+#          - debug:
+#              msg: "{{size}}"
+#            tags: vm_info
+#          - name: reverse to list order
+#            set_fact: 
+#              sorted_size: "{{size | reverse }}"
+#            tags: vm_info
+          - name: create volume from image {{ vm_name }} - ext - {{ disk_index }}          
+            os_volume:          
+              display_name: "{{ vm_name }}-ext-{{ disk_index }}"          
+              image: "{{ vm_name }}-ext-{{ disk_index }}"          
+              state: present          
+              cloud: openstack          
+              size: "{{ size_list[disk_index] | int }}"
+            loop: "{{disk_id_ext}}"
+            loop_control:
+              index_var: disk_index          
+            tags:          
+              - osp          
+              - vm_info
+
+          - set_fact:
+              volumes: "{{ volumes|default([]) + [vm_name + '-ext-' + (disk_index | string )]}}"
+            loop: "{{ disk_id_ext }}"
+            loop_control:
+              index_var: disk_index            
+            tags: vm_info
+          - debug:
+              msg: "{{volumes}}"
+            tags: vm_info
+                
+          - name: launch the instance with multiple disk {{ vm_name }}
+            os_server:
+              name: "{{ vm_name }}"
+              state: present
+              cloud: openstack
+              flavor: "{{ flavor }}"
+              image: "{{ vm_name }}-boot"
+              boot_from_volume: true
+              nics: "{{ lookup('template','nics.j2') }}" 
+              volumes: "{{ lookup('template','volumes.j2') }}"
+            tags: launch_instance
+
+
+        rescue:    
+          - name: start vm at RHV     
+            ovirt_vm:      
+              state: running      
+              name: "{{ vm_name }}"      
+              auth: "{{ ovirt_auth }}"        
+        when: result.ovirt_vms[0].disk_attachments|length != 1
+
+
+
+      
