@@ -4,13 +4,13 @@
   vars_files:
     - varsfile.yml
   vars:
-    vm_name: CHEFTEST02
+    vm_name: 
     flavor: c4r8d200.flavor
   tasks:
       - name: Obtain SSO token with using username/password credentials        
         ovirt_auth:          
-          url: https://rhevman.turktelekom.local/ovirt-engine/api          
-          username: admin@internal
+          url:          
+          username:
           insecure: true          
           password: "{{ ovirt_password }}"
         tags: vm_info
