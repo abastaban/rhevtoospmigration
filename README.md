@@ -8,6 +8,7 @@ Bu çalışma ile Rhevde çalışan VMler sanal makine aracılığı ile OSP ort
 
 Çalışma esnasında default bir vm kurulur, rhev ve ospde bulunan ortak vlanlardan makineye subnet tanımı yapılır. Sonrasında ansible ve pyhton paketleri bu makine üzerine deploy edilir.
 
-Sonrasında ise makine kapatılarak vm üzerine alınır ve OSP'de çalışabilecek şekilde gerekli dönüşümleri yapılır. (disk,os,nw tanımları vb.)
+Sonrasında ise ansible playbook çalıştırılarak makine kapatılır sonrasında sanal makine üzerinden  OSP'ye aktarılır. 
+
 
 
